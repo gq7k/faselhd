@@ -1,4 +1,4 @@
-from fastapi import FastAPI, responses
+from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from playwright.async_api import async_playwright
@@ -24,11 +24,14 @@ async def get_movie_details(imdb_id: str):
             response = await client.get(url)
             data = response.json()
             if data.get("movie_results") and len(data["movie_results"]) > 0:
-                return f"{data['movie_results'][0].get('title')} {data['movie_results'][0].get('release_date', '').split('-')[0]}"
-        except: return None
+                title = data["movie_results"][0].get('title')
+                year = data["movie_results"][0].get('release_date', '').split('-')[0]
+                return f"{title} {year}"
+        except: 
+            return None
     return None
 
-# دالة Scraping ذكية تتجاهل روابط الإعلانات و Yandex
+# دالة Scraping مع دعم أكوام وتجنب Yandex
 async def scrape_video_url(search_query: str, site_url: str):
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
@@ -37,40 +40,76 @@ async def scrape_video_url(search_query: str, site_url: str):
         
         async def intercept(request):
             nonlocal video_url
-            # نبحث عن ملفات الفيديو ونتجاهل المواقع الوسيطة (yandex/ads)
             if (".mp4" in request.url or ".m3u8" in request.url) and "yandex" not in request.url and "ads" not in request.url:
                 video_url = request.url
 
         page.on("request", intercept)
         try:
             await page.goto(f"{site_url}/?s={search_query.replace(' ', '+')}", timeout=15000)
-            await page.wait_for_timeout(6000) # انتظار أطول لضمان تحميل الروابط
-        except: pass
-        finally: await browser.close()
+            await page.wait_for_timeout(6000)
+        except: 
+            pass
+        finally: 
+            await browser.close()
         return video_url
 
-# الواجهة مع زر النسخ
+# الواجهة الرئيسية مع زر النسخ والتوليد التلقائي
 @app.get("/", response_class=HTMLResponse)
 def home():
-    return """
-    <html>
-    <body style="background:#0f172a; color:white; text-align:center; padding-top:50px; font-family:sans-serif;">
-        <div style="background:#1e293b; padding:30px; border-radius:12px; display:inline-block;">
-            <h2>رابط إضافة Stremio</h2>
-            <input type="text" id="url" value="https://faselhd-jeti.onrender.com/manifest.json" style="padding:10px; width:300px; border-radius:5px; border:none;">
-            <button onclick="copy()" style="padding:10px 20px; background:#38bdf8; border:none; cursor:pointer;">نسخ الرابط</button>
+    html_content = """
+    <!DOCTYPE html>
+    <html lang="ar" dir="rtl">
+    <head>
+        <meta charset="UTF-8">
+        <title>Arabic Streams Addon</title>
+        <style>
+            body { font-family: Tahoma, sans-serif; background: #0f172a; color: #fff; text-align: center; padding-top: 60px; }
+            .box { background: #1e293b; padding: 40px; border-radius: 12px; display: inline-block; box-shadow: 0 4px 20px rgba(0,0,0,0.5); width: 85%; max-width: 550px; }
+            input { width: 85%; padding: 12px; font-size: 15px; border-radius: 6px; border: none; text-align: center; background: #0f172a; color: #38bdf8; margin: 20px 0; }
+            button { background: #38bdf8; color: #0f172a; border: none; padding: 12px 25px; font-size: 16px; font-weight: bold; border-radius: 6px; cursor: pointer; transition: 0.3s; }
+            button:hover { background: #0ea5e9; }
+            .msg { color: #4ade80; margin-top: 15px; display: none; font-weight: bold; }
+        </style>
+    </head>
+    <body>
+        <div class="box">
+            <h2>إضافة Stremio - فاصل، مدينة الأفلام، وأكوام</h2>
+            <p>انسخ رابط الإضافة أدناه والصقه في تطبيق Stremio:</p>
+            <input type="text" id="addonUrl" readonly>
+            <br>
+            <button onclick="copyText()">نسخ الرابط</button>
+            <div id="successMsg" class="msg">تم نسخ الرابط بنجاح! 🚀</div>
         </div>
-        <script>function copy(){navigator.clipboard.writeText(document.getElementById('url').value); alert('تم النسخ!');}</script>
+
+        <script>
+            // توليد رابط الـ manifest تلقائياً حسب دومين السيرفر الحالي
+            document.getElementById('addonUrl').value = window.location.origin + "/manifest.json";
+
+            function copyText() {
+                var copyInput = document.getElementById("addonUrl");
+                copyInput.select();
+                copyInput.setSelectionRange(0, 99999);
+                navigator.clipboard.writeText(copyInput.value);
+                
+                var msg = document.getElementById("successMsg");
+                msg.style.display = "block";
+                setTimeout(function() {
+                    msg.style.display = "none";
+                }, 3000);
+            }
+        </script>
     </body>
     </html>
     """
+    return HTMLResponse(content=html_content)
 
 @app.get("/manifest.json")
 def get_manifest():
     return {
         "id": "com.khaled.arabicstreams",
-        "version": "1.1.0",
+        "version": "1.2.0",
         "name": "Arabic Streams Pro",
+        "description": "جلب الروابط المباشرة من فاصل إعلاني، مدينة الأفلام، وأكوام",
         "resources": ["stream"],
         "types": ["movie", "series"],
         "idPrefixes": ["tt"]
@@ -79,14 +118,22 @@ def get_manifest():
 @app.get("/stream/{type}/{imdb_id}.json")
 async def get_stream(type: str, imdb_id: str):
     search_query = await get_movie_details(imdb_id.split(":")[0])
-    if not search_query: return {"streams": []}
+    if not search_query: 
+        return {"streams": []}
     
     streams = []
-    # المواقع المدعومة: فاصل، مدينة الأفلام، وأكوام
-    for url in ["https://web82118x.faselhdx.buzz", "https://m.filmcity12.com", "https://akwams.org"]:
-        video = await scrape_video_url(search_query, url)
+    # البحث في المواقع الثلاثة (فاصل، مدينة الأفلام، وأكوام)
+    sites = [
+        ("FaselHD", "https://web82118x.faselhdx.buzz"),
+        ("FilmCity", "https://m.filmcity12.com"),
+        ("Akwam", "https://akwams.org")
+    ]
+    
+    for name, site_url in sites:
+        video = await scrape_video_url(search_query, site_url)
         if video:
-            streams.append({"name": "Arabic Stream", "title": "تشغيل مباشر", "url": video})
+            streams.append({"name": name, "title": "تشغيل مباشر", "url": video})
+            
     return {"streams": streams}
 
 if __name__ == "__main__":
